@@ -1,141 +1,124 @@
 import streamlit as st
-import os
-from linkedin_api import Linkedin
-import spacy
-import en_core_web_sm
-from spacy.matcher import Matcher
-import PyPDF2
-import openai
+import http.client
+import urllib.parse
+import json
+import requests
 
-# Set up Streamlit interface
-st.set_page_config(page_title='Profile and Resume Analyzer', page_icon=':clipboard:', layout='wide')
-st.title('Profile and Resume Analyzer')
+# API Keys
+OPENROUTER_API_KEY = "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"
+OPEN_AI_KEY = ""
 
-def authenticate_linkedin(client_id, client_secret):
-    """
-    Authenticate with the LinkedIn API using the provided client ID and secret.
+# Functions
+def get_linkedin_user_details(linkedin_url):
+    encoded_url = urllib.parse.quote(linkedin_url, safe='')
+    conn = http.client.HTTPSConnection("fresh-linkedin-profile-data.p.rapidapi.com")
+    headers = {
+        'X-RapidAPI-Key': "f51b4efdc3mshe0f49f00da66748p1afa3ajsn7e4fd3128ea4",
+        'X-RapidAPI-Host': "fresh-linkedin-profile-data.p.rapidapi.com"
+    }
+    conn.request("GET", f"/get-linkedin-profile?linkedin_url={encoded_url}&include_skills=false", headers=headers)
+    res = conn.getresponse()
+    data = res.read().decode("utf-8")
+    return json.loads(data)
 
-    Args:
-        client_id (str): LinkedIn API client ID.
-        client_secret (str): LinkedIn API client secret.
+def get_linkedin_posts(linkedin_url):
+    encoded_url = urllib.parse.quote(linkedin_url, safe='')
+    conn = http.client.HTTPSConnection("fresh-linkedin-profile-data.p.rapidapi.com")
+    headers = {
+        'X-RapidAPI-Key': "f51b4efdc3mshe0f49f00da66748p1afa3ajsn7e4fd3128ea4",
+        'X-RapidAPI-Host': "fresh-linkedin-profile-data.p.rapidapi.com"
+    }
+    conn.request("GET", f"/get-profile-posts?linkedin_url={encoded_url}&type=posts", headers=headers)
+    res = conn.getresponse()
+    data = res.read().decode("utf-8")
+    return json.loads(data)
 
-    Returns:
-        Linkedin: Authenticated LinkedIn API client instance, or None if authentication fails.
-    """
-    if client_id and client_secret:
-        try:
-            api = Linkedin(client_id, client_secret)
-            return api
-        except Exception as e:
-            st.sidebar.error(f"LinkedIn API authentication failed: {e}")
-            return None
-    else:
-        st.sidebar.error("Please set the LINKEDIN_CLIENT_ID and LINKEDIN_CLIENT_SECRET environment variables.")
-        return None
+def generate_text(prompt):
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "x-api-key": f"{OPEN_AI_KEY}",
+        "Referer": "YOUR_SITE_URL",
+        "X-Title": "YOUR_APP_NAME",
+        "Content-Type": "application/json"
+    }
+    data = {
+        "model": "openai/gpt-4-turbo",
+        "max_tokens": 4000,
+        "temperature": 0,
+        "messages": [{"role": "user", "content": prompt}]
+    }
+    response = requests.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=data)
+    return response.json()
 
-def extract_text_from_pdf(file):
-    """
-    Extract text content from each page of a PDF file.
+# Streamlit App
+def main():
+    st.title("LinkedIn Profile Analyzer")
 
-    Args:
-        file (UploadedFile): PDF file uploaded by the user.
+    with st.form(key="linkedin_form"):
+        linkedin_url = st.text_input("Enter the LinkedIn profile URL:")
+        submit_button = st.form_submit_button(label="Analyze")
 
-    Returns:
-        str: Extracted text content of the PDF, or an error message if extraction fails.
-    """
-    text = ''
-    try:
-        pdf_reader = PyPDF2.PdfFileReader(file)
-        for page_num in range(pdf_reader.getNumPages()):
-            page = pdf_reader.getPage(page_num)
-            text += page.extractText()
-    except Exception as e:
-        st.error(f"Error extracting text from PDF: {e}")
-    return text
+    if submit_button and linkedin_url:
+        with st.spinner("Fetching user details..."):
+            user_details = get_linkedin_user_details(linkedin_url)
 
-def analyze_text(text):
-    """
-    Analyze text content using SpaCy to identify patterns and suggestions.
+        if 'data' in user_details:
+            user_details_no_urls = {
+                key: value for key, value in user_details['data'].items()
+                if not isinstance(value, str) or 'http' not in value
+            }
+            st.subheader("User Details")
+            st.json(user_details_no_urls)
 
-    Args:
-        text (str): Text to be analyzed.
+            with st.spinner("Fetching user posts..."):
+                posts_data = get_linkedin_posts(linkedin_url)
+                posts = posts_data.get('data', [])
 
-    Returns:
-        tuple: SpaCy doc object and list of suggested improvements.
-    """
-    try:
-        nlp = en_core_web_sm.load()
-        doc = nlp(text)
-        matcher = Matcher(nlp.vocab)
-        pattern1 = [{'LOWER': 'improve'}, {'POS': 'ADP'}, {'POS': 'NOUN'}]
-        pattern2 = [{'LOWER': 'add'}, {'POS': 'NOUN'}, {'POS': 'ADP'}, {'POS': 'NOUN'}]
-        matcher.add('Improvement', [pattern1, pattern2])
-        matches = matcher(doc)
-        suggestions = [doc[start:end].text for match_id, start, end in matches]
-        return doc, suggestions
-    except Exception as e:
-        st.error(f"Error analyzing text with SpaCy: {e}")
-        return None, []
+            if posts:
+                st.subheader("Extracted Posts")
+                for i, post in enumerate(posts, 1):
+                    if 'text' in post:
+                        st.markdown(f"**Post {i}:** {post['text']}")
+                    else:
+                        st.markdown(f"**Post {i}:** [No text available]")
 
-def generate_summary_and_recommendations(text):
-    """
-    Generate a summary and recommendations for improvement using OpenAI's GPT model.
+                with st.spinner("Generating detailed analysis..."):
+                    prompt = f"""
+                    LinkedIn Profile Analysis
 
-    Args:
-        text (str): Text to generate a summary and recommendations for.
+                    User Summary:
+                    (Replace the example summary below with actual user details):
+                    - Name: {user_details_no_urls.get('name', 'N/A')}
+                    - Profile Summary: {user_details_no_urls.get('headline', 'N/A')}
+                    - Profile URL: {linkedin_url}
 
-    Returns:
-        tuple: Summary and recommendations as strings, or an error message if generation fails.
-    """
-    openai.api_key = os.getenv('OPENAI_API_KEY')
-    try:
-        summary = openai.Completion.create(
-            engine='text-davinci-003',
-            prompt=f"Please summarize the following text:\n{text}",
-            temperature=0.5,
-            max_tokens=100
-        ).choices[0].text.strip()
-        
-        recommendations = openai.Completion.create(
-            engine='text-davinci-003',
-            prompt=f"Please provide recommendations for improvement based on the following text:\n{text}",
-            temperature=0.5,
-            max_tokens=200
-        ).choices[0].text.strip()
-        
-        return summary, recommendations
-    except Exception as e:
-        st.error(f"Error generating summary and recommendations with OpenAI: {e}")
-        return "Summary not available.", "Recommendations not available."
+                    Detailed Analysis Request:
+                    1. Analyze the technical content of the user's posts.
+                    2. Extract key phrases or important sentences that showcase expertise.
+                    3. Assess engagement levels of the posts (likes, comments, shares).
+                    4. Identify trends in discussed topics and alignment with industry trends.
+                    5. Evaluate community impact and collaborative efforts.
 
-# Get LinkedIn API authentication from environment variables
-client_id = os.getenv('LINKEDIN_CLIENT_ID')
-client_secret = os.getenv('LINKEDIN_CLIENT_SECRET')
+                    Posts Analysis:
+                    """
+                    for i, post in enumerate(posts, 1):
+                        try:
+                            prompt += f"\nPost {i}: {post['text']}"
+                        except KeyError:
+                            prompt += f"\nPost {i}: [No text available]"
 
-# Authenticate with LinkedIn API
-api = authenticate_linkedin(client_id, client_secret)
+                    analysis_results = generate_text(prompt)
 
-# Get profile URL from user
-st.sidebar.title('Profile URL')
-profile_url = st.sidebar.text_input('Enter your LinkedIn profile URL')
-
-if profile_url and api:
-    try:
-        # Extract profile data using LinkedIn API
-        profile = api.get_profile(profile_url=profile_url)
-        
-        # Analyze profile using SpaCy
-        doc_profile, suggestions_profile = analyze_text(profile.get('summary', ''))
-        
-        st.write('**Summary:**')
-        st.write(profile.get('summary', 'No summary found.'))
-        
-        if suggestions_profile:
-            st.write('**Suggestions:**')
-            for suggestion in suggestions_profile:
-                st.write(suggestion)
+                if 'choices' in analysis_results:
+                    st.subheader("Analysis Results")
+                    for choice in analysis_results['choices']:
+                        st.write(choice['message']['content'])
+                else:
+                    st.error("Failed to generate analysis results.")
+            else:
+                st.warning("No posts found or no text available in posts.")
         else:
-            st.write('**No suggestions. Your profile looks great!**')
-    except Exception as e:
-        st.error(f"Error fetching LinkedIn profile: {e}")
+            st.error("Failed to fetch user details. Please check the LinkedIn URL.")
 
+if __name__ == "__main__":
+    main()
