@@ -1,6 +1,2 @@
-linkedin-api
-openai
-PyPDF2
-spacy
 streamlit
-en-core-web-sm
+requests
